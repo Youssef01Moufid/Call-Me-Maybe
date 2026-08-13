@@ -3,8 +3,7 @@ from trie import Trie, TrieNode
 import numpy as np
 
 
-
-#----------GENERATE FUNCTION NAME----------------
+# ----------GENERATE FUNCTION NAME----------------
 def ft_tokinize_function(model: Small_LLM_Model, functions: list[dict]) -> list[list[int]] | None:
 
     tokens_func: list[list[int]] = []
@@ -16,43 +15,6 @@ def ft_tokinize_function(model: Small_LLM_Model, functions: list[dict]) -> list[
 
     return tokens_func
 
-def generate_function_name(
-    model: Small_LLM_Model,
-    input_ids: list[int],
-    tokens_func: list[list[int]],
-) -> list[int]:
-    """Force the model to select and generate one of the known function name
-    token sequences, token by token.
-    """
-    remaining_candidates = tokens_func
-    position = 0
-
-    while True:
-        allowed_next = list({
-            candidate[position]
-            for candidate in remaining_candidates
-            if len(candidate) > position
-        })
-
-        if not allowed_next:
-            raise ValueError("No candidate function name matched generation.")
-
-        logits = model.get_logits_from_input_ids(input_ids)
-        best_token_id = max(allowed_next, key=lambda token_id: logits[token_id])
-
-        input_ids.append(best_token_id)
-
-        remaining_candidates = [
-            candidate for candidate in remaining_candidates
-            if len(candidate) > position and candidate[position] == best_token_id
-        ]
-
-        position += 1
-
-        if len(remaining_candidates) == 1 and len(remaining_candidates[0]) == position:
-            break
-
-    return input_ids
 
 def select_function_name(
     model: Small_LLM_Model,
@@ -101,9 +63,7 @@ def select_function_name(
             return function_names[remaining_indices[0]]
 
 
-
-
-#----------GENERATE  PARAMETERS----------------
+# ----------GENERATE PARAMETERS----------------
 
 def find_safe_candidates(trie: Trie, id_to_token: dict[int, str], remaining: str) -> list[int]:
     """Find token IDs whose string is a prefix of `remaining` (doesn't overshoot).
@@ -125,6 +85,7 @@ def find_safe_candidates(trie: Trie, id_to_token: dict[int, str], remaining: str
         if remaining.startswith(token_str):
             safe.append(token_id)
     return safe
+
 
 def generate_literal(
     model: Small_LLM_Model,
@@ -163,6 +124,7 @@ def generate_literal(
 
     return input_ids
 
+
 def build_targets(function: dict) -> list:
     """Build the ordered list of JSON pieces needed to represent this function's arguments.
 
@@ -190,6 +152,7 @@ def build_targets(function: dict) -> list:
     targets.append("}")
     return targets
 
+
 def get_digit_tokens(id_to_token: dict[int, str]) -> list[int]:
     """Find every token ID whose text is made up only of ASCII digits 0-9.
 
@@ -205,6 +168,7 @@ def get_digit_tokens(id_to_token: dict[int, str]) -> list[int]:
         if token != "" and all(char in ascii_digits for char in token):
             digit_ids.append(token_id)
     return digit_ids
+
 
 def generate_number(
     model: Small_LLM_Model,
@@ -241,6 +205,61 @@ def generate_number(
 
     return input_ids
 
+
+def get_safe_string_mask(id_to_token: dict[int, str], vocab_size: int) -> np.ndarray:
+    """Build a boolean mask (True = safe) for JSON string content tokens
+    (excludes raw quotes, backslashes, and control characters).
+
+    Args:
+        id_to_token: Reverse mapping from token ID to token string.
+        vocab_size: Total number of entries in the model's logits output
+            (may be larger than len(id_to_token) due to reserved slots).
+
+    Returns:
+        A boolean numpy array of length vocab_size, True where safe.
+    """
+    mask = np.zeros(vocab_size, dtype=bool)
+    unsafe_chars = {'"', "\\"}
+    for token_id, token in id_to_token.items():
+        if token == "":
+            continue
+        if any(char in unsafe_chars for char in token):
+            continue
+        if any(ord(char) < 0x20 for char in token):
+            continue
+        mask[token_id] = True
+    return mask
+
+
+def generate_string(
+    model: Small_LLM_Model,
+    trie: Trie,
+    id_to_token: dict[int, str],
+    input_ids: list[int],
+    safe_string_mask: np.ndarray,
+    max_string_tokens: int = 50,
+) -> list[int]:
+    """Generate a string value: opening quote, free content, closing quote."""
+    input_ids = generate_literal(model, trie, id_to_token, input_ids, '"')
+
+    quote_candidates = find_safe_candidates(trie, id_to_token, '"')
+    allowed_mask = safe_string_mask.copy()
+    allowed_mask[quote_candidates] = True
+
+    for _ in range(max_string_tokens):
+        logits = np.array(model.get_logits_from_input_ids(input_ids))
+        masked_logits = np.where(allowed_mask, logits, -np.inf)
+        best_token_id = int(np.argmax(masked_logits))
+
+        if best_token_id in quote_candidates:
+            break
+
+        input_ids.append(best_token_id)
+
+    input_ids = generate_literal(model, trie, id_to_token, input_ids, '"')
+    return input_ids
+
+
 def generate_from_targets(
     model: Small_LLM_Model,
     trie: Trie,
@@ -248,8 +267,22 @@ def generate_from_targets(
     input_ids: list[int],
     targets: list,
     digit_ids: list[int],
-    safe_string_ids: list[int],
+    safe_string_mask: np.ndarray,
 ) -> list[int]:
+    """Walk the targets list, generating literals and values in order.
+
+    Args:
+        model: The LLM wrapper.
+        trie: The vocabulary trie.
+        id_to_token: Reverse mapping from token ID to token string.
+        input_ids: Token IDs generated so far (will be extended).
+        targets: The ordered list from build_targets.
+        digit_ids: Pre-computed list of token IDs that are pure digits.
+        safe_string_mask: Boolean mask of token IDs safe for string content.
+
+    Returns:
+        The updated input_ids list.
+    """
     for i, target in enumerate(targets):
         if isinstance(target, tuple):
             value_type = target[1]
@@ -260,69 +293,10 @@ def generate_from_targets(
                 )
             elif value_type == "string":
                 input_ids = generate_string(
-                    model, trie, id_to_token, input_ids, safe_string_ids
+                    model, trie, id_to_token, input_ids, safe_string_mask
                 )
             continue
 
         input_ids = generate_literal(model, trie, id_to_token, input_ids, target)
-
-    return input_ids
-
-def get_safe_string_tokens(id_to_token: dict[int, str]) -> list[int]:
-    """Find token IDs safe to use inside a JSON string's content
-    (excludes raw quotes, backslashes, and control characters).
-
-    Args:
-        id_to_token: Reverse mapping from token ID to token string.
-
-    Returns:
-        A list of token IDs safe for string content.
-    """
-    unsafe_chars = {'"', "\\"}
-    safe_ids = []
-    for token_id, token in id_to_token.items():
-        if token == "":
-            continue
-        if any(char in unsafe_chars for char in token):
-            continue
-        if any(ord(char) < 0x20 for char in token):
-            continue
-        safe_ids.append(token_id)
-    return safe_ids
-
-def generate_string(
-    model: Small_LLM_Model,
-    trie: Trie,
-    id_to_token: dict[int, str],
-    input_ids: list[int],
-    safe_string_ids: list[int],
-) -> list[int]:
-    """Generate a string value: opening quote, free content, closing quote.
-
-    Args:
-        model: The LLM wrapper.
-        trie: The vocabulary trie.
-        id_to_token: Reverse mapping from token ID to token string.
-        input_ids: Token IDs generated so far (will be extended).
-        safe_string_ids: Pre-computed list of token IDs safe for string content.
-
-    Returns:
-        The updated input_ids list.
-    """
-    input_ids = generate_literal(model, trie, id_to_token, input_ids, '"')
-
-    quote_candidates = find_safe_candidates(trie, id_to_token, '"')
-    allowed_token_ids = safe_string_ids + quote_candidates
-
-    while True:
-        logits = model.get_logits_from_input_ids(input_ids)
-        best_token_id = max(allowed_token_ids, key=lambda token_id: logits[token_id])
-
-        if best_token_id in quote_candidates:
-            break
-
-        input_ids.append(best_token_id)
-
-    input_ids = generate_literal(model, trie, id_to_token, input_ids, '"')
 
     return input_ids

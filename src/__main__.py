@@ -7,7 +7,7 @@ from constraint_decoder import (
     build_targets,
     generate_from_targets,
     get_digit_tokens,
-    get_safe_string_tokens,
+    get_safe_string_mask,
     select_function_name,
 )
 from llm_sdk.llm_sdk import Small_LLM_Model
@@ -15,29 +15,30 @@ from models import FunctionCallResult
 
 
 def build_selection_prompt(user_prompt: str, function_names: list[str]) -> str:
-    """Build a chat-formatted prompt instructing the model to pick a function."""
+    """Build a prompt instructing the model to pick a function."""
     names_list = ", ".join(function_names)
     system_message = (
-        f"Pick the function that matches the user's request. "
+        f"Pick the function that matches this request. "
         f"Available functions: {names_list}."
     )
     return (
-        f"<|im_start|>system\n{system_message}<|im_end|>\n"
-        f"<|im_start|>user\n{user_prompt}<|im_end|>\n"
-        f"<|im_start|>assistant\n"
+        f"{system_message}\n"
+        f"Request: {user_prompt}\n"
+        f"Answer:"
     )
 
 
 def build_extraction_prompt(user_prompt: str, function: dict) -> str:
-    """Build a chat-formatted prompt instructing the model to extract arguments."""
+    """Build a prompt instructing the model to extract arguments."""
     system_message = (
-        f"Extract the values for function '{function['name']}' "
-        f"({function['description']}) from the user's message."
+        f"Extract the parameters for the function '{function['name']}' "
+        f"Don't apply the funciton on the parameters, just extract them. "
+        f"({function['description']}) from this request."
     )
     return (
-        f"<|im_start|>system\n{system_message}<|im_end|>\n"
-        f"<|im_start|>user\n{user_prompt}<|im_end|>\n"
-        f"<|im_start|>assistant\n"
+        f"{system_message}\n"
+        f"Request: {user_prompt}\n"
+        f"Answer:"
     )
 
 
@@ -64,7 +65,10 @@ def main() -> None:
     trie.build_from_vocab(vocab)
 
     digit_ids = get_digit_tokens(id_to_token)
-    safe_string_ids = get_safe_string_tokens(id_to_token)
+
+    sample_logits = llm_model.get_logits_from_input_ids([0])
+    vocab_size = len(sample_logits)
+    safe_string_mask = get_safe_string_mask(id_to_token, vocab_size)
 
     tokens_func = ft_tokinize_function(llm_model, functions)
     function_names = [f["name"] for f in functions]
@@ -88,7 +92,7 @@ def main() -> None:
         prefix_len = len(param_ids)
 
         param_ids = generate_from_targets(
-            llm_model, trie, id_to_token, param_ids, targets, digit_ids, safe_string_ids
+            llm_model, trie, id_to_token, param_ids, targets, digit_ids, safe_string_mask
         )
 
         parameters_json = llm_model.decode(param_ids[prefix_len:])
