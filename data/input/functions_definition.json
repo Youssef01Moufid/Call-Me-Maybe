@@ -67,5 +67,17 @@
     "returns": {
       "type": "string"
     }
+  },
+  {
+  "name": "fn_double_number",
+  "description": "Double a number and return the result.",
+  "parameters": {
+    "n": {
+      "type": "number"
+    }
+  },
+  "returns": {
+    "type": "number"
   }
+ }
 ]
