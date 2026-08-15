@@ -1,9 +1,10 @@
 from llm_sdk.llm_sdk import Small_LLM_Model
-from trie import Trie, TrieNode
+from trie import Trie
 import numpy as np
 
 
 # ----------GENERATE FUNCTION NAME----------------
+
 def ft_tokinize_function(model: Small_LLM_Model, functions: list[dict]) -> list[list[int]] | None:
 
     tokens_func: list[list[int]] = []

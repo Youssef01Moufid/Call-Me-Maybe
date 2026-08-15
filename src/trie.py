@@ -1,7 +1,8 @@
 class TrieNode:
-    def __init__(self):
+    def __init__(self) -> None:
         self.children: dict[str, "TrieNode"] = {}
         self.token_id: int | None = None
+
 
 class Trie:
     def __init__(self) -> None:
