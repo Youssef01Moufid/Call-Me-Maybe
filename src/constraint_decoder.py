@@ -63,6 +63,36 @@ def select_function_name(
         if len(remaining_indices) == 1 and len(tokens_func[remaining_indices[0]]) == position:
             return function_names[remaining_indices[0]]
 
+#-----------Boolean paramaeter generation----------------
+
+def generate_boolean(
+    model: Small_LLM_Model,
+    trie: Trie,
+    id_to_token: dict[int, str],
+    input_ids: list[int],
+) -> list[int]:
+    """Force the model to generate either 'true' or 'false'.
+
+    Args:
+        model: The LLM wrapper.
+        trie: The vocabulary trie.
+        id_to_token: Reverse mapping from token ID to token string.
+        input_ids: Token IDs generated so far (will be extended).
+
+    Returns:
+        The updated input_ids list.
+    """
+    true_candidates = find_safe_candidates(trie, id_to_token, "true")
+    false_candidates = find_safe_candidates(trie, id_to_token, "false")
+
+    logits = model.get_logits_from_input_ids(input_ids)
+    all_candidates = true_candidates + false_candidates
+    best_first_token = max(all_candidates, key=lambda token_id: logits[token_id])
+
+    if best_first_token in true_candidates:
+        return generate_literal(model, trie, id_to_token, input_ids, "true")
+    else:
+        return generate_literal(model, trie, id_to_token, input_ids, "false")
 
 # ----------GENERATE PARAMETERS----------------
 
@@ -270,20 +300,6 @@ def generate_from_targets(
     digit_ids: list[int],
     safe_string_mask: np.ndarray,
 ) -> list[int]:
-    """Walk the targets list, generating literals and values in order.
-
-    Args:
-        model: The LLM wrapper.
-        trie: The vocabulary trie.
-        id_to_token: Reverse mapping from token ID to token string.
-        input_ids: Token IDs generated so far (will be extended).
-        targets: The ordered list from build_targets.
-        digit_ids: Pre-computed list of token IDs that are pure digits.
-        safe_string_mask: Boolean mask of token IDs safe for string content.
-
-    Returns:
-        The updated input_ids list.
-    """
     for i, target in enumerate(targets):
         if isinstance(target, tuple):
             value_type = target[1]
@@ -296,6 +312,8 @@ def generate_from_targets(
                 input_ids = generate_string(
                     model, trie, id_to_token, input_ids, safe_string_mask
                 )
+            elif value_type == "boolean":
+                input_ids = generate_boolean(model, trie, id_to_token, input_ids)
             continue
 
         input_ids = generate_literal(model, trie, id_to_token, input_ids, target)

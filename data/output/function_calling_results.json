@@ -83,5 +83,12 @@
       "regex": "cat.*cat.*",
       "replacement": "dog"
     }
+  },
+  {
+    "prompt": "Make the item visible",
+    "name": "fn_set_visibility",
+    "parameters": {
+      "visible": true
+    }
   }
 ]
