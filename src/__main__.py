@@ -4,7 +4,7 @@ from constraint_decoder import (
     ft_tokinize_function,
     build_targets,
     generate_from_targets,
-    get_digit_tokens,
+    get_number_candidate_pool,
     get_safe_string_mask,
     select_function_name,
 )
@@ -31,9 +31,9 @@ def build_selection_prompt(user_prompt: str, function_names: list[str]) -> str:
 def build_extraction_prompt(user_prompt: str, function: dict) -> str:
     """Build a prompt instructing the model to extract arguments."""
     system_message = (
-        f"Extract the parameters for the function '{function['name']}' "
-        f"Don't apply the funciton on the parameters, just extract them. "
-        f"({function['description']}) from this request."
+        f"Extract the values for function '{function['name']}' "
+        f"({function['description']}) from this request. "
+        f"Numbers can be negative."
     )
     return (
         f"{system_message}\n"
@@ -74,7 +74,7 @@ def main() -> None:
     trie = Trie()
     trie.build_from_vocab(vocab)
 
-    digit_ids = get_digit_tokens(id_to_token)
+    number_candidate_pool = get_number_candidate_pool(id_to_token)
 
     sample_logits = llm_model.get_logits_from_input_ids([0])
     vocab_size = len(sample_logits)
@@ -100,7 +100,7 @@ def main() -> None:
             prefix_len = len(param_ids)
 
             param_ids = generate_from_targets(
-                llm_model, trie, id_to_token, param_ids, targets, digit_ids, safe_string_mask
+                llm_model, trie, id_to_token, param_ids, targets, number_candidate_pool, safe_string_mask
             )
 
             parameters_json = llm_model.decode(param_ids[prefix_len:])

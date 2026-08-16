@@ -63,36 +63,6 @@ def select_function_name(
         if len(remaining_indices) == 1 and len(tokens_func[remaining_indices[0]]) == position:
             return function_names[remaining_indices[0]]
 
-#-----------Boolean paramaeter generation----------------
-
-def generate_boolean(
-    model: Small_LLM_Model,
-    trie: Trie,
-    id_to_token: dict[int, str],
-    input_ids: list[int],
-) -> list[int]:
-    """Force the model to generate either 'true' or 'false'.
-
-    Args:
-        model: The LLM wrapper.
-        trie: The vocabulary trie.
-        id_to_token: Reverse mapping from token ID to token string.
-        input_ids: Token IDs generated so far (will be extended).
-
-    Returns:
-        The updated input_ids list.
-    """
-    true_candidates = find_safe_candidates(trie, id_to_token, "true")
-    false_candidates = find_safe_candidates(trie, id_to_token, "false")
-
-    logits = model.get_logits_from_input_ids(input_ids)
-    all_candidates = true_candidates + false_candidates
-    best_first_token = max(all_candidates, key=lambda token_id: logits[token_id])
-
-    if best_first_token in true_candidates:
-        return generate_literal(model, trie, id_to_token, input_ids, "true")
-    else:
-        return generate_literal(model, trie, id_to_token, input_ids, "false")
 
 # ----------GENERATE PARAMETERS----------------
 
@@ -156,6 +126,38 @@ def generate_literal(
     return input_ids
 
 
+# ----------BOOLEAN PARAMETER GENERATION----------------
+
+def generate_boolean(
+    model: Small_LLM_Model,
+    trie: Trie,
+    id_to_token: dict[int, str],
+    input_ids: list[int],
+) -> list[int]:
+    """Force the model to generate either 'true' or 'false'.
+
+    Args:
+        model: The LLM wrapper.
+        trie: The vocabulary trie.
+        id_to_token: Reverse mapping from token ID to token string.
+        input_ids: Token IDs generated so far (will be extended).
+
+    Returns:
+        The updated input_ids list.
+    """
+    true_candidates = find_safe_candidates(trie, id_to_token, "true")
+    false_candidates = find_safe_candidates(trie, id_to_token, "false")
+
+    logits = model.get_logits_from_input_ids(input_ids)
+    all_candidates = true_candidates + false_candidates
+    best_first_token = max(all_candidates, key=lambda token_id: logits[token_id])
+
+    if best_first_token in true_candidates:
+        return generate_literal(model, trie, id_to_token, input_ids, "true")
+    else:
+        return generate_literal(model, trie, id_to_token, input_ids, "false")
+
+
 def build_targets(function: dict) -> list:
     """Build the ordered list of JSON pieces needed to represent this function's arguments.
 
@@ -184,21 +186,55 @@ def build_targets(function: dict) -> list:
     return targets
 
 
-def get_digit_tokens(id_to_token: dict[int, str]) -> list[int]:
-    """Find every token ID whose text is made up only of ASCII digits 0-9.
+def is_valid_number_continuation(current_number_text: str, token: str) -> bool:
+    """Check if appending `token` to `current_number_text` keeps it a valid
+    (possibly incomplete) JSON number, allowing an optional leading '-'
+    and an optional decimal point.
+
+    Args:
+        current_number_text: The number text generated so far for this value.
+        token: A candidate token's text to potentially append.
+
+    Returns:
+        True if the result would still be a valid (partial) number.
+    """
+    candidate = current_number_text + token
+
+    if candidate.count("-") > 1:
+        return False
+    if candidate.count(".") > 1:
+        return False
+
+    for i, char in enumerate(candidate):
+        if char == "-":
+            if i != 0:
+                return False
+        elif char == ".":
+            if i == 0 or candidate[i - 1] == "-":
+                return False
+        elif not char.isdigit():
+            return False
+
+    return True
+
+
+def get_number_candidate_pool(id_to_token: dict[int, str]) -> list[int]:
+    """Find every token ID made only of digits or '.' (a cheap pre-filter;
+    position validity is checked separately).
 
     Args:
         id_to_token: Reverse mapping from token ID to token string.
 
     Returns:
-        A list of token IDs safe to use while building a number.
+        A list of token IDs that could plausibly be part of a number.
     """
-    ascii_digits = set("0123456789")
-    digit_ids = []
+    number_chars = set("0123456789.-")
+    
+    pool = []
     for token_id, token in id_to_token.items():
-        if token != "" and all(char in ascii_digits for char in token):
-            digit_ids.append(token_id)
-    return digit_ids
+        if token != "" and all(char in number_chars for char in token):
+            pool.append(token_id)
+    return pool
 
 
 def generate_number(
@@ -207,9 +243,10 @@ def generate_number(
     id_to_token: dict[int, str],
     input_ids: list[int],
     next_literal: str,
-    digit_ids: list[int],
+    number_candidate_pool: list[int],
 ) -> list[int]:
-    """Generate a numeric value, stopping once the model prefers the next literal.
+    """Generate a numeric value, optionally with a decimal point, stopping
+    once the model prefers the next literal.
 
     Args:
         model: The LLM wrapper.
@@ -217,15 +254,21 @@ def generate_number(
         id_to_token: Reverse mapping from token ID to token string.
         input_ids: Token IDs generated so far (will be extended).
         next_literal: The literal text that follows this value (e.g. "," or "}").
-        digit_ids: Pre-computed list of token IDs that are pure digits.
+        number_candidate_pool: Pre-filtered token IDs made only of digits or ".".
 
     Returns:
         The updated input_ids list.
     """
     stop_candidates = find_safe_candidates(trie, id_to_token, next_literal)
-    allowed_token_ids = digit_ids + stop_candidates
+    current_number_text = ""
 
     while True:
+        valid_now = [
+            token_id for token_id in number_candidate_pool
+            if is_valid_number_continuation(current_number_text, id_to_token[token_id])
+        ]
+        allowed_token_ids = valid_now + stop_candidates
+
         logits = model.get_logits_from_input_ids(input_ids)
         best_token_id = max(allowed_token_ids, key=lambda token_id: logits[token_id])
 
@@ -233,6 +276,7 @@ def generate_number(
             break
 
         input_ids.append(best_token_id)
+        current_number_text += id_to_token[best_token_id]
 
     return input_ids
 
@@ -297,16 +341,30 @@ def generate_from_targets(
     id_to_token: dict[int, str],
     input_ids: list[int],
     targets: list,
-    digit_ids: list[int],
+    number_candidate_pool: list[int],
     safe_string_mask: np.ndarray,
 ) -> list[int]:
+    """Walk the targets list, generating literals and values in order.
+
+    Args:
+        model: The LLM wrapper.
+        trie: The vocabulary trie.
+        id_to_token: Reverse mapping from token ID to token string.
+        input_ids: Token IDs generated so far (will be extended).
+        targets: The ordered list from build_targets.
+        number_candidate_pool: Pre-filtered token IDs made only of digits or ".".
+        safe_string_mask: Boolean mask of token IDs safe for string content.
+
+    Returns:
+        The updated input_ids list.
+    """
     for i, target in enumerate(targets):
         if isinstance(target, tuple):
             value_type = target[1]
             if value_type == "number":
                 next_literal = targets[i + 1]
                 input_ids = generate_number(
-                    model, trie, id_to_token, input_ids, next_literal, digit_ids
+                    model, trie, id_to_token, input_ids, next_literal, number_candidate_pool
                 )
             elif value_type == "string":
                 input_ids = generate_string(

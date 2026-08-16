@@ -67,17 +67,5 @@
     "returns": {
       "type": "string"
     }
-  },
-  {
-    "name": "fn_set_visibility",
-    "description": "Set whether an item is visible.",
-    "parameters": {
-      "visible": {
-        "type": "boolean"
-      }
-    },
-    "returns": {
-      "type": "boolean"
-    }
   }
 ]
