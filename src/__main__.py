@@ -27,20 +27,21 @@ def build_selection_prompt(user_prompt: str, function_names: list[str]) -> str:
         f"Answer:"
     )
 
-
 def build_extraction_prompt(user_prompt: str, function: dict) -> str:
     """Build a prompt instructing the model to extract arguments."""
     system_message = (
-        f"Extract the values for function '{function['name']}' "
-        f"({function['description']}) from this request. "
-        f"Numbers can be negative."
+        f"Extract the argument values for function '{function['name']}' "
+        f"from the user's request. "
+        f"Return the values exactly as they appear in the request. "
+        f"Do not execute the function or transform, calculate, reverse, "
+        f"translate, or modify any value. "
     )
+
     return (
         f"{system_message}\n"
         f"Request: {user_prompt}\n"
         f"Answer:"
     )
-
 
 def main() -> None:
     """Generate full function-call results (name + parameters) for all prompts."""
@@ -99,8 +100,11 @@ def main() -> None:
             param_ids = llm_model.encode(extraction_prompt)[0].tolist()
             prefix_len = len(param_ids)
 
+            minus_token_id = next(tid for tid, tok in id_to_token.items() if tok == "-")
+
             param_ids = generate_from_targets(
-                llm_model, trie, id_to_token, param_ids, targets, number_candidate_pool, safe_string_mask
+                llm_model, trie, id_to_token, param_ids, targets,
+                number_candidate_pool, safe_string_mask, minus_token_id, prompt
             )
 
             parameters_json = llm_model.decode(param_ids[prefix_len:])

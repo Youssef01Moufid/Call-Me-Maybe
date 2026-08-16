@@ -1,6 +1,7 @@
 from llm_sdk.llm_sdk import Small_LLM_Model
 from trie import Trie
 import numpy as np
+import re
 
 
 # ----------GENERATE FUNCTION NAME----------------
@@ -219,7 +220,7 @@ def is_valid_number_continuation(current_number_text: str, token: str) -> bool:
 
 
 def get_number_candidate_pool(id_to_token: dict[int, str]) -> list[int]:
-    """Find every token ID made only of digits or '.' (a cheap pre-filter;
+    """Find every token ID made only of digits, '.', or '-' (a cheap pre-filter;
     position validity is checked separately).
 
     Args:
@@ -229,12 +230,24 @@ def get_number_candidate_pool(id_to_token: dict[int, str]) -> list[int]:
         A list of token IDs that could plausibly be part of a number.
     """
     number_chars = set("0123456789.-")
-    
+
     pool = []
     for token_id, token in id_to_token.items():
         if token != "" and all(char in number_chars for char in token):
             pool.append(token_id)
     return pool
+
+
+def prompt_suggests_negative(prompt: str) -> bool:
+    """Check whether the prompt contains an explicit negative number pattern.
+
+    Args:
+        prompt: The original natural language request.
+
+    Returns:
+        True if the prompt contains a '-' directly followed by a digit.
+    """
+    return bool(re.search(r"-\d", prompt))
 
 
 def generate_number(
@@ -244,9 +257,11 @@ def generate_number(
     input_ids: list[int],
     next_literal: str,
     number_candidate_pool: list[int],
+    minus_token_id: int,
+    force_minus: bool = False,
 ) -> list[int]:
-    """Generate a numeric value, optionally with a decimal point, stopping
-    once the model prefers the next literal.
+    """Generate a numeric value, optionally with a decimal point and a
+    leading minus sign, stopping once the model prefers the next literal.
 
     Args:
         model: The LLM wrapper.
@@ -254,7 +269,10 @@ def generate_number(
         id_to_token: Reverse mapping from token ID to token string.
         input_ids: Token IDs generated so far (will be extended).
         next_literal: The literal text that follows this value (e.g. "," or "}").
-        number_candidate_pool: Pre-filtered token IDs made only of digits or ".".
+        number_candidate_pool: Pre-filtered token IDs made only of digits, ".", or "-".
+        minus_token_id: The token ID for a bare "-" character.
+        force_minus: If True, always start this number with a minus sign
+            (used when the source prompt clearly implies a negative value).
 
     Returns:
         The updated input_ids list.
@@ -269,8 +287,11 @@ def generate_number(
         ]
         allowed_token_ids = valid_now + stop_candidates
 
-        logits = model.get_logits_from_input_ids(input_ids)
-        best_token_id = max(allowed_token_ids, key=lambda token_id: logits[token_id])
+        if current_number_text == "" and force_minus and minus_token_id in allowed_token_ids:
+            best_token_id = minus_token_id
+        else:
+            logits = model.get_logits_from_input_ids(input_ids)
+            best_token_id = max(allowed_token_ids, key=lambda token_id: logits[token_id])
 
         if best_token_id in stop_candidates:
             break
@@ -343,6 +364,8 @@ def generate_from_targets(
     targets: list,
     number_candidate_pool: list[int],
     safe_string_mask: np.ndarray,
+    minus_token_id: int,
+    prompt: str,
 ) -> list[int]:
     """Walk the targets list, generating literals and values in order.
 
@@ -352,19 +375,25 @@ def generate_from_targets(
         id_to_token: Reverse mapping from token ID to token string.
         input_ids: Token IDs generated so far (will be extended).
         targets: The ordered list from build_targets.
-        number_candidate_pool: Pre-filtered token IDs made only of digits or ".".
+        number_candidate_pool: Pre-filtered token IDs made only of digits, ".", or "-".
         safe_string_mask: Boolean mask of token IDs safe for string content.
+        minus_token_id: The token ID for a bare "-" character.
+        prompt: The original natural language request, used to detect whether
+            a negative number is expected.
 
     Returns:
         The updated input_ids list.
     """
+    force_minus = prompt_suggests_negative(prompt)
+
     for i, target in enumerate(targets):
         if isinstance(target, tuple):
             value_type = target[1]
             if value_type == "number":
                 next_literal = targets[i + 1]
                 input_ids = generate_number(
-                    model, trie, id_to_token, input_ids, next_literal, number_candidate_pool
+                    model, trie, id_to_token, input_ids, next_literal,
+                    number_candidate_pool, minus_token_id, force_minus
                 )
             elif value_type == "string":
                 input_ids = generate_string(
