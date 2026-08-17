@@ -1,18 +1,19 @@
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
+from typing import Literal
 
 
 class Parameter(BaseModel):
-    type: str
+    type: Literal["string", "integer", "number", "boolean"]
 
 
 class FunctionDefinition(BaseModel):
-    name: str
+    name: str = Field(min_length=1)
     description: str
     parameters: dict[str, Parameter]
 
 
 class PromptItem(BaseModel):
-    prompt: str
+    prompt: str = Field(min_length=1)
 
 
 class FunctionCallResult(BaseModel):
